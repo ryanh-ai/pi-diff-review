@@ -31,9 +31,17 @@ export interface ReviewCancelPayload {
   type: "cancel";
 }
 
-export type ReviewWindowMessage = ReviewSubmitPayload | ReviewCancelPayload;
+export interface ChangeRefPayload {
+  type: "change-ref";
+  ref: string;
+}
+
+export type ReviewWindowMessage = ReviewSubmitPayload | ReviewCancelPayload | ChangeRefPayload;
 
 export interface DiffReviewWindowData {
   repoRoot: string;
   files: DiffReviewFile[];
+  comparisonRef: string;
+  availableBranches: string[];
+  currentBranch: string;
 }

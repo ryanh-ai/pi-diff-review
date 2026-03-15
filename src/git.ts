@@ -39,6 +39,53 @@ async function hasHead(pi: ExtensionAPI, repoRoot: string): Promise<boolean> {
   return result.code === 0;
 }
 
+export async function validateRef(pi: ExtensionAPI, repoRoot: string, ref: string): Promise<boolean> {
+  const result = await pi.exec("git", ["rev-parse", "--verify", ref], { cwd: repoRoot });
+  return result.code === 0;
+}
+
+export async function getAvailableBranches(pi: ExtensionAPI, repoRoot: string): Promise<string[]> {
+  const branches: string[] = [];
+
+  // Local branches
+  const localOutput = await runGitAllowFailure(pi, repoRoot, [
+    "for-each-ref", "--format=%(refname:short)", "--sort=-committerdate", "refs/heads/",
+  ]);
+  if (localOutput.trim()) {
+    for (const line of localOutput.trim().split(/\r?\n/)) {
+      const name = line.trim();
+      if (name) branches.push(name);
+    }
+  }
+
+  // Remote tracking branches (excluding HEAD pointers)
+  const remoteOutput = await runGitAllowFailure(pi, repoRoot, [
+    "for-each-ref", "--format=%(refname:short)", "--sort=-committerdate", "refs/remotes/",
+  ]);
+  if (remoteOutput.trim()) {
+    for (const line of remoteOutput.trim().split(/\r?\n/)) {
+      const name = line.trim();
+      if (name && !name.endsWith("/HEAD")) branches.push(name);
+    }
+  }
+
+  return branches;
+}
+
+export async function getCurrentBranchOrRef(pi: ExtensionAPI, repoRoot: string): Promise<string> {
+  // Try symbolic ref first (branch name)
+  const result = await pi.exec("git", ["symbolic-ref", "--short", "HEAD"], { cwd: repoRoot });
+  if (result.code === 0 && result.stdout.trim()) {
+    return result.stdout.trim();
+  }
+  // Detached HEAD — return short SHA
+  const shaResult = await pi.exec("git", ["rev-parse", "--short", "HEAD"], { cwd: repoRoot });
+  if (shaResult.code === 0 && shaResult.stdout.trim()) {
+    return shaResult.stdout.trim();
+  }
+  return "HEAD";
+}
+
 function parseNameStatus(output: string): ChangedPath[] {
   const lines = output
     .split(/\r?\n/)
@@ -88,8 +135,8 @@ function parseNameStatus(output: string): ChangedPath[] {
   return changes;
 }
 
-async function getHeadContent(pi: ExtensionAPI, repoRoot: string, path: string): Promise<string> {
-  const result = await pi.exec("git", ["show", `HEAD:${path}`], { cwd: repoRoot });
+async function getRefContent(pi: ExtensionAPI, repoRoot: string, ref: string, path: string): Promise<string> {
+  const result = await pi.exec("git", ["show", `${ref}:${path}`], { cwd: repoRoot });
   if (result.code !== 0) {
     return "";
   }
@@ -137,14 +184,31 @@ function toDisplayPath(change: ChangedPath): string {
   return change.newPath ?? change.oldPath ?? "(unknown)";
 }
 
-export async function getDiffReviewFiles(pi: ExtensionAPI, cwd: string): Promise<{ repoRoot: string; files: DiffReviewFile[] }> {
+export async function getDiffReviewFiles(
+  pi: ExtensionAPI,
+  cwd: string,
+  comparisonRef: string = "HEAD",
+): Promise<{ repoRoot: string; files: DiffReviewFile[]; comparisonRef: string }> {
   const repoRoot = await getRepoRoot(pi, cwd);
   const repositoryHasHead = await hasHead(pi, repoRoot);
+  const isHeadComparison = comparisonRef === "HEAD";
+
+  // Validate custom refs
+  if (!isHeadComparison) {
+    const valid = await validateRef(pi, repoRoot, comparisonRef);
+    if (!valid) {
+      throw new Error(`Invalid ref: ${comparisonRef}`);
+    }
+  }
 
   const trackedOutput = repositoryHasHead
-    ? await runGit(pi, repoRoot, ["diff", "--find-renames", "-M", "--name-status", "HEAD", "--"])
+    ? await runGit(pi, repoRoot, ["diff", "--find-renames", "-M", "--name-status", comparisonRef, "--"])
     : "";
-  const untrackedOutput = await runGitAllowFailure(pi, repoRoot, ["ls-files", "--others", "--exclude-standard"]);
+
+  // Only include untracked files when comparing against HEAD (working tree diff)
+  const untrackedOutput = isHeadComparison
+    ? await runGitAllowFailure(pi, repoRoot, ["ls-files", "--others", "--exclude-standard"])
+    : "";
 
   const trackedPaths = parseNameStatus(trackedOutput);
   const untrackedPaths = parseUntrackedPaths(untrackedOutput);
@@ -152,7 +216,7 @@ export async function getDiffReviewFiles(pi: ExtensionAPI, cwd: string): Promise
 
   const files = await Promise.all(
     changedPaths.map(async (change, index): Promise<DiffReviewFile> => {
-      const oldContent = change.oldPath == null ? "" : await getHeadContent(pi, repoRoot, change.oldPath);
+      const oldContent = change.oldPath == null ? "" : await getRefContent(pi, repoRoot, comparisonRef, change.oldPath);
       const newContent = change.newPath == null ? "" : await getWorkingTreeContent(repoRoot, change.newPath);
       return {
         id: `${index}:${change.status}:${change.oldPath ?? ""}:${change.newPath ?? ""}`,
@@ -166,5 +230,5 @@ export async function getDiffReviewFiles(pi: ExtensionAPI, cwd: string): Promise
     }),
   );
 
-  return { repoRoot, files };
+  return { repoRoot, files, comparisonRef };
 }

@@ -11,11 +11,16 @@ function formatLocation(comment: DiffReviewComment, filePath: string): string {
   return `${filePath}:${comment.startLine}${suffix}`;
 }
 
-export function composeReviewPrompt(files: DiffReviewFile[], payload: ReviewSubmitPayload): string {
+export function composeReviewPrompt(
+  files: DiffReviewFile[],
+  payload: ReviewSubmitPayload,
+  comparisonRef?: string,
+): string {
   const fileMap = new Map(files.map((file) => [file.id, file]));
   const lines: string[] = [];
 
-  lines.push("Please address the following feedback");
+  const refLabel = comparisonRef && comparisonRef !== "HEAD" ? ` (compared against \`${comparisonRef}\`)` : "";
+  lines.push(`Please address the following feedback${refLabel}`);
   lines.push("");
 
   const overallComment = payload.overallComment.trim();

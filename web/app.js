@@ -9,6 +9,8 @@ const state = {
   collapsedDirs: {},
   reviewedFiles: {},
   scrollPositions: {},
+  comparisonRef: reviewData.comparisonRef || "HEAD",
+  isLoadingRef: false,
 };
 
 const repoRootEl = document.getElementById("repo-root");
@@ -25,8 +27,108 @@ const fileCommentButton = document.getElementById("file-comment-button");
 const toggleReviewedButton = document.getElementById("toggle-reviewed-button");
 const toggleUnchangedButton = document.getElementById("toggle-unchanged-button");
 const toggleWrapButton = document.getElementById("toggle-wrap-button");
+const refSelector = document.getElementById("ref-selector");
+const refLoading = document.getElementById("ref-loading");
 
 repoRootEl.textContent = reviewData.repoRoot || "";
+
+// Populate the branch selector
+function populateRefSelector() {
+  refSelector.innerHTML = "";
+  const branches = reviewData.availableBranches || [];
+  const currentBranch = reviewData.currentBranch || "";
+  const currentRef = state.comparisonRef;
+
+  // Add HEAD option
+  const headOpt = document.createElement("option");
+  headOpt.value = "HEAD";
+  headOpt.textContent = currentBranch ? `HEAD (${currentBranch})` : "HEAD";
+  refSelector.appendChild(headOpt);
+
+  // Add branches (skip current branch since it's HEAD)
+  const seen = new Set(["HEAD"]);
+  for (const branch of branches) {
+    if (branch === currentBranch) continue; // Already represented by HEAD
+    if (seen.has(branch)) continue;
+    seen.add(branch);
+    const opt = document.createElement("option");
+    opt.value = branch;
+    opt.textContent = branch;
+    refSelector.appendChild(opt);
+  }
+
+  // If current ref isn't in the list (e.g. a custom SHA), add it
+  if (currentRef !== "HEAD" && !seen.has(currentRef)) {
+    const opt = document.createElement("option");
+    opt.value = currentRef;
+    opt.textContent = currentRef;
+    refSelector.appendChild(opt);
+  }
+
+  refSelector.value = currentRef;
+}
+
+populateRefSelector();
+
+// Handle branch change
+refSelector.addEventListener("change", () => {
+  const newRef = refSelector.value;
+  if (newRef === state.comparisonRef) return;
+
+  // Confirm if there are comments
+  if (state.comments.length > 0 || state.overallComment.trim()) {
+    const confirmed = confirm(
+      "Switching comparison branch will discard all your current comments and review progress. Continue?"
+    );
+    if (!confirmed) {
+      refSelector.value = state.comparisonRef;
+      return;
+    }
+  }
+
+  state.isLoadingRef = true;
+  refLoading.classList.remove("hidden");
+  refSelector.disabled = true;
+
+  // Send change-ref message to extension
+  window.glimpse.send({ type: "change-ref", ref: newRef });
+});
+
+// Listen for extension messages (ref-changed, ref-change-error)
+window.addEventListener("extension-message", (event) => {
+  const data = event.detail;
+
+  if (data.type === "ref-changed") {
+    // Update state with new data
+    state.comparisonRef = data.comparisonRef;
+    reviewData.files = data.files;
+    reviewData.comparisonRef = data.comparisonRef;
+
+    // Reset review state
+    state.comments = [];
+    state.overallComment = "";
+    state.reviewedFiles = {};
+    state.scrollPositions = {};
+    state.collapsedDirs = {};
+    state.activeFileId = data.files[0]?.id ?? null;
+
+    // Update UI
+    state.isLoadingRef = false;
+    refLoading.classList.add("hidden");
+    refSelector.disabled = false;
+    refSelector.value = data.comparisonRef;
+
+    renderAll();
+  }
+
+  if (data.type === "ref-change-error") {
+    state.isLoadingRef = false;
+    refLoading.classList.add("hidden");
+    refSelector.disabled = false;
+    refSelector.value = state.comparisonRef;
+    alert(`Failed to change comparison ref: ${data.error}`);
+  }
+});
 
 let monacoApi = null;
 let diffEditor = null;
